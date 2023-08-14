@@ -1,6 +1,6 @@
 (library
  (name minisat)
- (libraries logs fmt cmdliner)
+ (libraries dimacs logs fmt cmdliner)
  (preprocess
    (pps ppx_compare ppx_deriving.show ppx_sexp_conv)))
 

@@ -1,7 +1,11 @@
 (executable
   (public_name benchmarks)
-  (name test)
+  (name benchmarks)
   (libraries minisat dune-site logs))
+
+(rule
+  (alias benchmarks)
+  (action (run %{bin:benchmarks})))
 
 (generate_sites_module
  (module sites)

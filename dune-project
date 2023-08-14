@@ -30,7 +30,7 @@
    logs
    base
    stdio
-   (dimacs :with-test)
+   dimacs
    (ppx_inline_test :with-test)
    (ppx_assert :with-test))
  (tags

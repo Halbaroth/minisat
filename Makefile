@@ -23,4 +23,7 @@ uninstall:
 clean:
 	dune clean
 
+benchmarks:
+	dune exec -- benchmarks
+
 .PHONY: all switch deps watch install uninstall lock clean

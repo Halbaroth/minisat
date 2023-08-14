@@ -76,7 +76,7 @@ and neg_dummy_lit = {
   neg = dummy_lit
 }
 
-let pp_lit fmt ({ var; sign; watched; _ } as lit) =
+let pp_lit fmt ({ var; sign; _ } as lit) =
   if lit == dummy_lit then
     Fmt.pf fmt "(dummy_lit)"
   else
@@ -127,6 +127,7 @@ module type S = sig
   type t
 
   val make : unit -> t
+  val of_dimacs_file : string -> t
   val new_var : t -> var
   val add_clause : t -> lit list -> bool
   val simplify_db : t -> bool
@@ -155,7 +156,7 @@ end = struct
 end
 
 module Clause : sig
-  val locked : clause -> bool
+(*   val locked : clause -> bool *)
   (* Check if a learnt clause is locked, that is the clause is the reason
      of some propagation. *)
 
@@ -184,9 +185,9 @@ end = struct
     done;
     reason
 
-  let locked ({lits; learnt; _ } as clause) =
+  (* let locked ({lits; learnt; _ } as clause) =
     assert learnt;
-    compare_clause lits.(0).var.reason clause = 0
+    compare_clause lits.(0).var.reason clause = 0 *)
 
   let remove ({lits; _} as clause) =
     Vec.remove lits.(0).neg.watched clause;
@@ -238,7 +239,7 @@ module Make (O : Var_order with type env := var Vec.t) = struct
   let[@inline always] nb_vars env = Vec.size env.vars
   let[@inline always] nb_assigns env = Vec.size env.trail
   let[@inline always] nb_constrs env = Vec.size env.constrs
-  let[@inline always] nb_learnts env = Vec.size env.learnts
+(*   let[@inline always] nb_learnts env = Vec.size env.learnts *)
   let[@inline always] decision_level env = Vec.size env.trail_lim
 
   let var_rescale_activity env =
@@ -497,6 +498,51 @@ module Make (O : Var_order with type env := var Vec.t) = struct
     trail_lim = Vec.make ~dummy:(-1) 5;
   }
 
+  (* TODO: move this function in the Dimacs project *)
+  let pp_position fmt (pos : Lexing.position) =
+    Fmt.pf fmt "%s:%d:%d" pos.pos_fname pos.pos_lnum
+      (pos.pos_cnum - pos.pos_bol + 1)
+
+  module IntMap = Map.Make (Int)
+
+  let add_cnf Dimacs.Loc.{ data = (_ , clauses); _ } =
+    let open Dimacs in
+    let open Syntax in
+    let env = make () in
+    let cache : var IntMap.t ref = ref IntMap.empty in
+    List.iter (fun Loc.{ data = clause; _ } ->
+      let clause =
+        List.fold_left (fun acc Loc.{ data = l; _ } ->
+          let var =
+            match IntMap.find_opt (Int.abs l) !cache with
+            | Some var -> var
+            | None ->
+                let v = new_var env in
+                cache := IntMap.add (Int.abs l) v !cache;
+                v
+          in
+          assert (l <> 0);
+          let l = if l > 0 then lit var else neg (lit var) in
+          l :: acc
+        ) [] clause
+      in
+      let _ : bool = add_clause env clause in ()
+    ) clauses;
+    env
+
+  (* TODO: move this function in the Dimacs project *)
+  let of_dimacs_file filename =
+    let open Dimacs in
+    let lexbuf = open_in filename |> Lexing.from_channel ~with_positions:true in
+    try
+      let cnf = Parser.cnf Lexer.read lexbuf in
+      add_cnf cnf
+    with Parser.Error as exn ->
+      let bt = Printexc.get_raw_backtrace() in
+      Logs.debug (fun k -> k "Syntax error at position %a"
+        pp_position lexbuf.lex_curr_p);
+      Printexc.raise_with_backtrace exn bt
+
   let propagate env =
     Logs.debug (fun k -> k "propagate");
     try
@@ -568,11 +614,12 @@ module Make (O : Var_order with type env := var Vec.t) = struct
     Vec.set lits 0 !p.neg;
     lits, !bt_lvl
 
-  let reduce_db env =
-    let m = (Vec.size env.learnts)/2 in
-    let limit = env.cla_inc /. (Float.of_int (Vec.size env.learnts)) in
+  (* let reduce_db env =
+    let nb = nb_learnts env in
+    let m = nb / 2 in
+    let limit = env.cla_inc /. (Float.of_int nb) in
     let j = ref 0 in
-    for i = 0 to Vec.size env.learnts - 1 do
+    for i = 0 to nb - 1 do
       let learnt = Vec.get env.learnts i in
       if not @@ Clause.locked learnt
         && (i < m || (i >= m && learnt.cla_activity < limit)) then
@@ -582,7 +629,7 @@ module Make (O : Var_order with type env := var Vec.t) = struct
         incr j
       end
     done;
-    Vec.shrink env.learnts !j
+    Vec.shrink env.learnts !j *)
 
   let simplify_db env =
     let[@inline always] aux clas =
@@ -607,7 +654,7 @@ module Make (O : Var_order with type env := var Vec.t) = struct
   exception Sat of bool array
   exception Unsat
 
-  let search env ~max_conflicts ~max_learnts ~var_decay ~cla_decay =
+  let search env ~max_conflicts:_ ~max_learnts:_ ~var_decay ~cla_decay =
     assert (decision_level env = env.root_lvl);
     Logs.debug (fun k -> k "search");
     let conflict = ref 0 in

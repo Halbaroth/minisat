@@ -21,24 +21,15 @@ let reporter ppf =
   in
   { Logs.report = report }
 
-let main log_lvl =
+let main log_lvl inputs =
   Logs.set_reporter (reporter Format.err_formatter);
   Logs.set_level (Some log_lvl);
   Fmt.pr "@.";
-  let open Solver.Syntax in
-  let solver = SAT.make () in
-  let x = SAT.new_var solver in
-  let y = SAT.new_var solver in
-  let _ =
-    let b1 = SAT.add_clause solver [lit x; lit y] in
-    let b2 = SAT.add_clause solver [neg (lit x); neg (lit y)] in
-    let b3 = SAT.add_clause solver [neg (lit x); lit y] in
-    let b4 = SAT.add_clause solver [lit x; neg (lit y)] in
-    assert (b4);
-  in
-  match SAT.solve solver [] with
-  | Sat _ -> Fmt.pr "SAT@."
-  | Unsat -> Fmt.pr "UNSAT@."
+  List.iter (fun input ->
+    let solver = SAT.of_dimacs_file input in
+    match SAT.solve solver [] with
+    | Sat _ -> Fmt.pr "SAT@."
+    | Unsat -> Fmt.pr "UNSAT@.") inputs
 
 module Cmd = struct
   open Cmdliner
@@ -48,13 +39,16 @@ module Cmd = struct
     let level =
       Arg.enum
         [
-          ("info", Logs.Info);
+          ("info",    Logs.Info);
           ("warning", Logs.Warning);
-          ("error", Logs.Error);
-          ("debug", Logs.Debug);
+          ("error",   Logs.Error);
+          ("debug",   Logs.Debug);
         ]
     in
     Arg.(value & opt level Logs.Info & info [ "d"; "debug" ] ~docv:"LOG_LEVEL" ~doc)
+
+  let inputs =
+    Arg.(non_empty & pos_all file [] & info [] ~docv:"FILES")
 
   let parse () =
     let cmd =
@@ -67,10 +61,9 @@ module Cmd = struct
         ]
       in
       let info = Cmd.info "minisat" ~version:"dev" ~doc ~man in
-      Cmd.v info Term.(const main $ log_lvl)
+      Cmd.v info Term.(const main $ log_lvl $ inputs)
     in
     exit (Cmd.eval cmd)
 end
 
 let () = Cmd.parse ()
-

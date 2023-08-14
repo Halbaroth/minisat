@@ -28,6 +28,7 @@ module type S = sig
   type t
 
   val make : unit -> t
+  val of_dimacs_file : string -> t
   val new_var : t -> var
   val add_clause : t -> lit list -> bool
   val simplify_db : t -> bool
