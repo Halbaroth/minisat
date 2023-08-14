@@ -42,5 +42,5 @@ build: [
 ]
 dev-repo: "git+https://github.com/Halbaroth/minisat.git"
 pin-depends: [
-  [ "dimacs.dev" "test/dimacs" ]
+  [ "dimacs.dev" "lib/dimacs" ]
 ]
