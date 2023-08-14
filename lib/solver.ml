@@ -345,8 +345,8 @@ module Make (O : Var_order with type env := var Vec.t) = struct
           if not @@ equal_lbool (Lit.value lits.(i)) False then begin
             lits.(1) <- lits.(i);
             lits.(i) <- p.neg;
-            Vec.push lits.(i).neg.watched clause;
-            assert (Vec.size lits.(i).neg.watched > 0);
+            Vec.push lits.(1).neg.watched clause;
+            assert (Vec.size lits.(1).neg.watched > 0);
             raise Exit
           end
         done;
