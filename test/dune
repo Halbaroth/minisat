@@ -1,0 +1,8 @@
+(executable
+  (public_name benchmarks)
+  (name test)
+  (libraries minisat dune-site logs))
+
+(generate_sites_module
+ (module sites)
+ (sites minisat))

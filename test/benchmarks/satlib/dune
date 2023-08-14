@@ -1,0 +1,3 @@
+(install
+  (section (site (minisat satlib)))
+  (files (glob_files *.cnf)))

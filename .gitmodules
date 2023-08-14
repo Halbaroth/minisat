@@ -1,0 +1,3 @@
+[submodule "test/dimacs"]
+	path = test/dimacs
+	url = https://github.com/Halbaroth/dimacs.git

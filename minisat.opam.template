@@ -1,0 +1,3 @@
+pin-depends: [
+  [ "dimacs.dev" "test/dimacs" ]
+]
