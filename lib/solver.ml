@@ -26,7 +26,12 @@ and var = {
   mutable reason : clause;
   mutable value : lbool;
   lit : lit;
-  id : int
+  id : int;
+  dimacs_id : int option;
+  (* Original id if the variable have been added from 
+     a DIMACS file. Use for debugging purpose. *)
+  (* BUG: If we add both DIMACS clauses and clauses through the 
+     API, we could get the same id. *)
 }
 
 let rec compare_lit lit1 lit2 =
@@ -62,6 +67,7 @@ let rec dummy_var = {
   value = Unknown;
   lit = dummy_lit;
   id = -1;
+  dimacs_id = None;
 }
 and dummy_lit = {
   var = dummy_var;
@@ -76,31 +82,33 @@ and neg_dummy_lit = {
   neg = dummy_lit
 }
 
-let pp_lit fmt ({ var; sign; _ } as lit) =
-  if lit == dummy_lit then
-    Fmt.pf fmt "(dummy_lit)"
+let pp_var ppf ({ id; dimacs_id; _ } as var) =
+  if var == dummy_var then
+    Fmt.pf ppf "(dummy_var)"
   else
-    if sign then
-      Fmt.pf fmt "X_%i" var.id
-    else
-      Fmt.pf fmt "¬X_%i" var.id
+    let id =
+      match dimacs_id with
+      | Some id -> id
+      | None -> id
+    in
+    Fmt.int ppf id
+
+let pp_lit ppf ({ var; sign; _ } as lit) =
+  if lit == dummy_lit then
+    Fmt.pf ppf "(dummy_lit)"
+  else
+    if sign then pp_var ppf var
+    else Fmt.pf ppf "-%a" pp_var var
 
 let show_lit = Fmt.str "%a" pp_lit
 
-let pp_clause fmt ({ lits; _ } as clause) =
+let pp_clause ppf ({ lits; _ } as clause) =
   if clause == dummy_clause then
-    Fmt.pf fmt "(dummy_clause)"
+    Fmt.pf ppf "(dummy_clause)"
   else
-    let sep fmt () = Fmt.pf fmt "∨" in
-    Fmt.pf fmt "%a" (Fmt.array ~sep pp_lit) lits
+    Fmt.(array ~sep:sp pp_lit ppf lits)
 
 let show_clause = Fmt.str "%a" pp_clause
-
-let pp_var fmt ({ id; _ } as var) =
-  if var == dummy_var then
-    Fmt.pf fmt "(dummy_var)"
-  else
-    Fmt.pf fmt "X_%i" id
 
 let show_var = Fmt.str "%a" pp_var
 
@@ -150,7 +158,6 @@ end = struct
 
   module Set = Set.Make (struct
     type t = lit
-
     let compare = compare_lit
   end)
 end
@@ -178,8 +185,6 @@ end = struct
     let size = Array.length lits in
     let reason = Vec.make ~dummy:dummy_lit (size-j) in
     for i = j to size - 1 do
-      Logs.debug (fun k -> k "Lit: %a value: %a" pp_lit lits.(i) pp_lbool
-        (Lit.value lits.(i)));
       assert (Lit.value lits.(i) == False);
       Vec.push reason lits.(i).neg
     done;
@@ -243,8 +248,8 @@ module Make (O : Var_order with type env := var Vec.t) = struct
   let[@inline always] decision_level env = Vec.size env.trail_lim
 
   let var_rescale_activity env =
-    Vec.iter env.vars
-      ~f:(fun var -> var.var_activity <- var.var_activity *. 1e-100);
+    Vec.iter 
+      (fun var -> var.var_activity <- var.var_activity *. 1e-100) env.vars;
     env.var_inc <- env.var_inc *. 1e-100
 
   let var_bump_activity env var =
@@ -283,12 +288,12 @@ module Make (O : Var_order with type env := var Vec.t) = struct
 
   (* Find a literal with the maximal decision level in the array ps. *)
   let highest_dlvl ps =
-    Vec.fold ps ~init:(-1, -1) ~f:(fun (i, max) lit ->
+    Vec.fold (fun (i, max) lit ->
       if lit.var.dlvl > max then
         (i+1, lit.var.dlvl)
       else
         (i+1, max)
-    )
+    ) (-1, -1) ps
     |> fst
 
   (* Remove the duplicates and false literals. *)
@@ -308,6 +313,8 @@ module Make (O : Var_order with type env := var Vec.t) = struct
     | False -> false
     | True -> true
     | Unknown ->
+        Logs.debug (fun k -> k"enqueue literal %a with reason %a" pp_lit
+          p pp_clause from);
         (* Store the new fact. *)
         let _ =
           if p.sign then
@@ -319,19 +326,21 @@ module Make (O : Var_order with type env := var Vec.t) = struct
         p.var.reason <- from;
         Vec.push env.trail p;
         Queue.push p env.propagations;
+        Logs.debug (fun k -> k"assignment after enqueue %a"
+          Fmt.(iter ~sep:sp Vec.iter pp_lit)
+          env.trail);
         true
 
   let propagate_in_clause env clause p =
-    Logs.debug (fun k -> k "propagate literal %a in clause %a" pp_lit p pp_clause clause);
+    Logs.debug (fun k -> k"propagate literal %a in clause %a" pp_lit p
+      pp_clause clause);
     let lits = clause.lits in
     assert (Array.length lits >= 2);
-    (* Make sure the false literal is lits[1]. *)
-    let () =
-      if Lit.compare lits.(0) p.neg = 0 then begin
-        lits.(0) <- lits.(1);
-        lits.(1) <- p.neg
-      end
-    in
+    (* Make sure the false literal is lits.(1). *)
+    if Lit.compare lits.(0) p.neg = 0 then begin
+      lits.(0) <- lits.(1);
+      lits.(1) <- p.neg
+    end;
     (* If the first literal is true, the clause is already satisfied. *)
     if equal_lbool (Lit.value lits.(0)) True then begin
       Vec.push p.watched clause;
@@ -350,7 +359,9 @@ module Make (O : Var_order with type env := var Vec.t) = struct
             raise Exit
           end
         done;
-        (* Clause is unit under the current assignment. *)
+        (* We don't find any literal to watch, which means the clause 
+           is unit under the current assignment and we have 
+           to propagate [lits.(0)] to satisfy it. *)
         Vec.push p.watched clause;
         assert (Vec.size p.watched > 0);
         enqueue env lits.(0) ~from:clause
@@ -373,11 +384,12 @@ module Make (O : Var_order with type env := var Vec.t) = struct
           if learnt then begin
             (* Pick a second literal to watch. *)
             let max_i = highest_dlvl ps in
+            assert (max_i >= 0);
             lits.(1) <- Vec.get ps max_i;
             lits.(max_i) <- Vec.get ps 1;
             (* Bumping the activity of the clause. *)
             cla_bump_activity env clause;
-            Vec.iter ps ~f:(fun lit -> var_bump_activity env lit.var)
+            Vec.iter (fun lit -> var_bump_activity env lit.var) ps
           end
         in
         (* Add clause to watcher vectors. *)
@@ -385,43 +397,48 @@ module Make (O : Var_order with type env := var Vec.t) = struct
         Vec.push lits.(1).neg.watched clause;
         true, Some clause
     in
-    let res =
-      if not learnt then
-        if Vec.exists ~f:(fun lit -> equal_lbool (Lit.value lit) True) ps then
-          true, None
-        else if Vec.exists ~f:(fun lit -> Vec.mem lit.neg ps) ps then
-          true, None
-        else
-          aux (normalize ps)
+    if not learnt then
+      if Vec.exists (fun lit -> equal_lbool (Lit.value lit) True) ps then
+        true, None
+      else if Vec.exists (fun lit -> Vec.mem lit.neg ps) ps then
+        true, None
       else
-        aux ps
-    in
-    Logs.debug (fun k -> k "new clause %a" (Fmt.option pp_clause) (snd res));
-    res
+        aux (normalize ps)
+    else
+      aux ps
 
   let add_clause env ps =
     let ps = Vec.of_list ~dummy:dummy_lit ps in
     match new_clause env ps ~learnt:false with
     | res, Some c ->
         Vec.push env.constrs c;
-        Logs.debug (fun k -> k "add clause %a" pp_clause c);
+        Logs.debug (fun k -> k"add clause %a" 
+          Fmt.(iter ~sep:sp Vec.iter pp_lit) ps);
         res
     | res, None ->
         res
 
   let record env lits =
-    Logs.debug (fun k -> k "record the clause %a" (Vec.pp ~sep:"," pp_lit) lits);
+    Logs.debug (fun k -> k"record the clause %a" 
+        Fmt.(iter ~sep:sp Vec.iter pp_lit) lits);
     assert (Vec.size lits > 0);
     let res, clause = new_clause env lits ~learnt:true in
     assert res;
-    assert (enqueue env ?from:clause (Vec.get lits 0));
+    let res = enqueue env ?from:clause (Vec.get lits 0) in
+    assert res;
     match clause with
     | Some c -> Vec.push env.learnts c
     | None -> ()
 
   let assume env p =
     assert (Queue.is_empty env.propagations);
-    Vec.push env.trail_lim (nb_assigns env);
+    let lim = nb_assigns env in
+    Logs.debug (fun k -> k"-------------@\n\
+      current model: %a" 
+      Fmt.(iter ~sep:sp Vec.iter pp_lit) env.trail);
+    Vec.push env.trail_lim lim;
+    Logs.debug (fun k -> k"assume %a at level %i" pp_lit p
+      (decision_level env));
     enqueue env p
 
   (* Unbind the last variable on the trail. *)
@@ -453,7 +470,7 @@ module Make (O : Var_order with type env := var Vec.t) = struct
       cancel env
     done
 
-  let new_var env =
+  let new_var ~dimacs_id env =
     let rec var = {
       var_activity = 0.;
       undos = Vec.make ~dummy:dummy_clause 5;
@@ -461,7 +478,8 @@ module Make (O : Var_order with type env := var Vec.t) = struct
       reason = dummy_clause;
       value = Unknown;
       lit;
-      id = nb_vars env
+      id = nb_vars env;
+      dimacs_id
     }
     and lit = {
       var;
@@ -514,17 +532,18 @@ module Make (O : Var_order with type env := var Vec.t) = struct
       let clause =
         List.fold_left (fun acc Loc.{ data = l; _ } ->
           let var =
-            match IntMap.find_opt (Int.abs l) !cache with
-            | Some var -> var
-            | None ->
-                let v = new_var env in
-                cache := IntMap.add (Int.abs l) v !cache;
-                v
+            match IntMap.find (Int.abs l) !cache with
+            | var -> var
+            | exception Not_found ->
+              let v = new_var ~dimacs_id:(Some (Int.abs l)) env in
+              cache := IntMap.add (Int.abs l) v !cache;
+              v
           in
           assert (l <> 0);
           let l = if l > 0 then lit var else neg (lit var) in
           l :: acc
         ) [] clause
+        |> List.rev
       in
       let _ : bool = add_clause env clause in ()
     ) clauses;
@@ -533,24 +552,30 @@ module Make (O : Var_order with type env := var Vec.t) = struct
   (* TODO: move this function in the Dimacs project *)
   let of_dimacs_file filename =
     let open Dimacs in
-    let lexbuf = open_in filename |> Lexing.from_channel ~with_positions:true in
+    let lexbuf =
+      open_in filename |> Lexing.from_channel ~with_positions:true
+    in
     try
       let cnf = Parser.cnf Lexer.read lexbuf in
       add_cnf cnf
     with Parser.Error as exn ->
       let bt = Printexc.get_raw_backtrace() in
-      Logs.debug (fun k -> k "Syntax error at position %a"
+      Logs.debug (fun k -> k"syntax error at position %a"
         pp_position lexbuf.lex_curr_p);
       Printexc.raise_with_backtrace exn bt
 
+  let new_var = new_var ~dimacs_id:None
+
   let propagate env =
-    Logs.debug (fun k -> k "propagate");
     try
       while Queue.length env.propagations > 0 do
         let p = Queue.pop env.propagations in
-        Logs.debug (fun k -> k "propagate literal %a" pp_lit p);
-        Logs.debug (fun k -> k "%a watches clauses: %a" pp_lit p
-          (Vec.pp pp_clause) p.watched);
+        Logs.debug (fun k -> k"propagate literal %a" pp_lit p);
+        Logs.debug (fun k -> k"literal %a watches clauses: %a" 
+          pp_lit p
+          Fmt.(iter ~sep:comma Vec.iter pp_clause) p.watched);
+        (* TODO: replace the copy by a move as we don't use the 
+          old watches vector anymore. *)
         let tmp = Vec.copy p.watched in
         (* FIXME: is it necessary? *)
         Vec.clear p.watched;
@@ -558,61 +583,66 @@ module Make (O : Var_order with type env := var Vec.t) = struct
           if not @@ propagate_in_clause env (Vec.get tmp i) p then
             begin
               (* We found a conflict. *)
-              Vec.clear p.watched;
               for j = i + 1 to Vec.size tmp - 1 do
                 Vec.push p.watched (Vec.get tmp j)
               done;
               Queue.clear env.propagations;
-              Logs.debug (fun k -> k "Found %a" pp_clause (Vec.get tmp i));
-              raise (Found (Vec.get tmp i))
+              raise_notrace (Found (Vec.get tmp i))
             end
         done
       done;
       None
-    with Found c -> Some c
+    with Found c ->
+      assert (Array.for_all (fun lit -> Lit.value lit = False) c.lits);
+      Some c
 
   let analyze env confl =
-    Logs.debug (fun k -> k "analyze %a" pp_clause confl);
+    assert (decision_level env > env.root_lvl);
+    Logs.debug (fun k -> k"analyze %a" pp_clause confl);
     let confl = ref confl in
     let seen = Array.init (nb_vars env) (fun _ -> false) in
     let counter = ref 0 in
     let p = ref dummy_lit in
     let bt_lvl = ref 0 in
-    let lits = Vec.make ~dummy:dummy_lit 5 in
+    let out_learnt = Vec.make ~dummy:dummy_lit 5 in
     (* FIXME: really unsafe. We should'nt use the dummy value there. *)
-    Vec.push lits dummy_lit;
+    Vec.push out_learnt dummy_lit;
+    (* TODO: separate the two cases by creating two functions for calc_reason *)
     while !p == dummy_lit || !counter > 0 do
       assert (compare_clause !confl dummy_clause <> 0);
-      let reason = Clause.calc_reason !confl !p in
-      Logs.debug (fun k -> k "reason: %a" (Vec.pp pp_lit) reason);
+      let p_reason = Clause.calc_reason !confl !p in
       if !confl.learnt then cla_bump_activity env !confl;
 
-      (* Trace reason for the literal p. *)
-      assert (Vec.size reason > 0);
-      Vec.iter reason ~f:(fun q ->
+      (* Trace reason for the literal [p]. *)
+      assert (Vec.size p_reason > 0);
+      Vec.iter (fun q ->
         if not seen.(q.var.id) then begin
           seen.(q.var.id) <- true;
           if q.var.dlvl = decision_level env then begin
-            Logs.debug (fun k -> k "q = %a, dlvl = %i" pp_lit q q.var.dlvl);
             incr counter
           end
           else if q.var.dlvl > 0 then begin
-            Vec.push lits q.neg;
+            Vec.push out_learnt q.neg;
             bt_lvl := max !bt_lvl q.var.dlvl
           end
         end
-      );
+      ) p_reason;
 
       (* Select next literal to look at. *)
-      while !p == dummy_lit || not seen.(!p.var.id) do
+      let dowhile = ref true in
+      while !dowhile || not seen.(!p.var.id) do
+        dowhile := false;
         p := Vec.last env.trail;
+        assert (!p <> dummy_lit);
         confl := !p.var.reason;
         undo_one env
       done;
       decr counter
     done;
-    Vec.set lits 0 !p.neg;
-    lits, !bt_lvl
+    Vec.set out_learnt 0 !p.neg;
+    Logs.debug (fun k -> k"learn %a"
+      Fmt.(iter ~sep:sp Vec.iter pp_lit) out_learnt);
+    out_learnt, !bt_lvl
 
   (* let reduce_db env =
     let nb = nb_learnts env in
@@ -656,25 +686,29 @@ module Make (O : Var_order with type env := var Vec.t) = struct
 
   let search env ~max_conflicts:_ ~max_learnts:_ ~var_decay ~cla_decay =
     assert (decision_level env = env.root_lvl);
-    Logs.debug (fun k -> k "search");
+    Logs.debug (fun k -> k"search");
     let conflict = ref 0 in
     env.var_decay <- 1. /. var_decay;
     env.cla_decay <- 1. /. cla_decay;
     while true do
       match propagate env with
       | Some confl ->
+          Logs.debug (fun k -> k"conflict %a" pp_clause confl);
           incr conflict;
           if decision_level env = env.root_lvl then
             raise Unsat
           else begin
             let learnt, bt_lvl = analyze env confl in
-            cancel_until env (max bt_lvl env.root_lvl);
+            let bt_lvl = max bt_lvl env.root_lvl in
+            Logs.debug (fun k -> k"backjump to the level %i" bt_lvl);
+            cancel_until env bt_lvl;
             record env learnt;
             decay_activities env
           end
       | None ->
           (* No conflict have been found. *)
           (* if decision_level env = 0 then
+            (* FIXME: removing asserts is dangereous here. *)
             assert (simplify_db env = true); *)
           (* if nb_learnts env - nb_assigns env >= max_learnts then
             reduce_db env; *)
@@ -690,11 +724,18 @@ module Make (O : Var_order with type env := var Vec.t) = struct
             cancel_until env env.root_lvl *)
           else
             let p = (O.select env.vars).lit in
-            ignore (assume env p)
+            let res = assume env p in
+            assert res
     done
 
   let solve env assumptions =
-    Logs.debug (fun k -> k "solve assumptions:%a" (Fmt.list pp_lit) assumptions);
+    let _ =
+      match assumptions with
+      | [] -> Logs.debug (fun k -> k"solve")
+      | _ ->
+          Logs.debug (fun k -> k"solve assumptions:%a"
+            (Fmt.list pp_lit) assumptions)
+    in
     let var_decay = ref 0.95 in
     let cla_decay = ref 0.999 in
     let max_conflicts = ref 100 in
@@ -711,10 +752,12 @@ module Make (O : Var_order with type env := var Vec.t) = struct
       while true do
         search env ~max_conflicts:!max_conflicts ~max_learnts:!max_learnts
           ~var_decay:!var_decay ~cla_decay:!cla_decay;
-        max_conflicts := (Float.of_int !max_conflicts) *. 1.5 |> Int.of_float;
-        max_learnts := (Float.of_int !max_learnts) *. 1.1 |> Int.of_float;
+        max_conflicts := 
+          (Float.of_int !max_conflicts) *. 1.5 |> Int.of_float;
+        max_learnts := 
+          (Float.of_int !max_learnts) *. 1.1 |> Int.of_float;
       done;
-      assert false;
+      assert false
     with
     | Exit | Unsat -> (Unsat : answer)
     | Sat model ->
