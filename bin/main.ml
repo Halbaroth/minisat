@@ -1,15 +1,17 @@
 open Minisat
 
 module Order = struct
-  let new_var _ = ()
+  type 'a t = 'a var Vec.t
+
+  let make () = Vec.make ~dummy:Var.dummy 17 
+  let new_var env v = Vec.push env v
   let update_var _ _ = ()
   let update_all _ = ()
   let undo _ _ = ()
   let select env =
-    Vec.find_first ~p:(fun v -> Solver.value v = Unknown) env
+    Vec.find_first 
+      (fun v -> equal_lbool (Var.value v) Unknown) env
 end
-
-module SAT = Solver.Make (Order)
 
 let reporter ppf =
   let report _src level ~over k msgf =
@@ -21,18 +23,22 @@ let reporter ppf =
   in
   { Logs.report = report }
 
-let main log_lvl inputs =
+let main timeout log_lvl inputs =
   Logs.set_reporter (reporter Format.err_formatter);
   Logs.set_level (Some log_lvl);
-  Fmt.pr "@.";
   List.iter (fun input ->
-    let solver = SAT.of_dimacs_file input in
-    match SAT.solve solver [] with
-    | Sat _ -> Fmt.pr "SAT@."
-    | Unsat -> Fmt.pr "UNSAT@.") inputs
+    let (module SAT) = 
+      Solver.of_dimacs_file ~timeout ~order:(module Order) input 
+    in
+    let ans = SAT.check [] in 
+    Logs.app (fun k -> k"%a@." pp_answer ans)) inputs
 
 module Cmd = struct
   open Cmdliner
+
+  let timeout =
+    let doc = "Timeout" in 
+    Arg.(value & opt int 0 & info [ "time" ] ~docv:"TIME" ~doc)
 
   let log_lvl =
     let doc = "Set the logging level." in
@@ -61,7 +67,7 @@ module Cmd = struct
         ]
       in
       let info = Cmd.info "minisat" ~version:"dev" ~doc ~man in
-      Cmd.v info Term.(const main $ log_lvl $ inputs)
+      Cmd.v info Term.(const main $ timeout $ log_lvl $ inputs)
     in
     exit (Cmd.eval cmd)
 end

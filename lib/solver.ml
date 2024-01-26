@@ -1,12 +1,5 @@
 open Ppx_compare_lib.Builtin
-
-type lbool = True | False | Unknown [@@deriving show, compare, equal]
-
-let[@inline always] neg_lbool b =
-  match b with
-  | True -> False
-  | False -> True
-  | Unknown -> Unknown
+include Lbool 
 
 type lit = {
   var : var;
@@ -81,9 +74,7 @@ and neg_dummy_lit = {
 }
 
 module Var = struct 
-  type t = var 
-  
-  let dummy : t = dummy_var 
+  let dummy = dummy_var 
 
   let compare = compare_var 
 
@@ -102,9 +93,7 @@ module Var = struct
 end
 
 module Lit = struct 
-  type t = lit
-
-  let dummy : t = dummy_lit 
+  let dummy = dummy_lit 
 
   let compare = compare_lit
   
@@ -124,9 +113,7 @@ module Lit = struct
 end
 
 module Clause = struct 
-  type t = clause 
-
-  let dummy : t = dummy_clause
+  let dummy = dummy_clause
 
   let calc_reason { lits; _ } p =
     assert (p == dummy_lit || p == lits.(0));
@@ -183,36 +170,27 @@ module type Var_order = sig
   type t 
 
   val make : unit -> t
-  val new_var : t -> Var.t -> unit
-  val update_var : t -> Var.t -> unit
+  val new_var : t -> var -> unit
+  val update_var : t -> var -> unit
   val update_all : t -> unit
-  val undo : t -> Var.t -> unit
-  val select : t -> Var.t
+  val undo : t -> var -> unit
+  val select : t -> var 
 end
 
-type answer =
-  | Sat of Lit.t array 
-  | Unsat
-  | Timeout
-
-let pp_answer ppf ans =
-  match ans with 
-  | Sat _ -> Fmt.pf ppf "sat"
-  | Unsat -> Fmt.pf ppf "unsat"
-  | Timeout -> Fmt.pf ppf "timeout"
-
 module type S = sig
-  type t
+  type t 
+  type order
 
   val make : ?timeout:int -> unit -> t
-  val of_dimacs_file : ?timeout:int -> string -> t
-  val new_var : t -> Lit.t 
-  val add_clause : t -> Lit.t list -> bool
+  val new_var : t -> lit
+  val add_clause : t -> lit list -> bool
   val simplify_db : t -> bool
-  val check : t -> Lit.t list -> answer
+  val check : t -> lit list -> lit answer
 end
 
 module Make (O : Var_order) = struct
+  type order = O.t 
+
   type t = {
     mutable root_lvl : int;
 
@@ -240,14 +218,13 @@ module Make (O : Var_order) = struct
   }
 
   exception Unsat
-  exception Sat of Lit.t array
+  exception Sat of lit array
   exception Conflict of clause
 
   let[@inline always] nb_vars env = Vec.size env.vars
-  let[@inline always] nb_learnts env = Vec.size env.learnts
   let[@inline always] nb_assigns env = Vec.size env.trail
   let[@inline always] nb_constrs env = Vec.size env.constrs
-(*   let[@inline always] nb_learnts env = Vec.size env.learnts *)
+  let[@inline always] nb_learnts env = Vec.size env.learnts
   let[@inline always] decision_level env = Vec.size env.trail_lim
 
   let var_rescale_activity env =
@@ -518,16 +495,10 @@ module Make (O : Var_order) = struct
     timeout = timeout;
   }
 
-  (* TODO: move this function in the Dimacs project *)
-  let pp_position fmt (pos : Lexing.position) =
-    Fmt.pf fmt "%s:%d:%d" pos.pos_fname pos.pos_lnum
-      (pos.pos_cnum - pos.pos_bol + 1)
-
   module IntMap = Map.Make (Int)
 
-  let add_cnf ?timeout Dimacs.Loc.{ data = (_ , clauses); _ } =
+  let add_cnf env Dimacs.Loc.{ data = (_ , clauses); _ } =
     let open Dimacs in
-    let env = make ?timeout () in
     (* TODO: use a Hashtbl here. *)
     let cache : lit IntMap.t ref = ref IntMap.empty in
     List.iter (fun Loc.{ data = clause; _ } ->
@@ -548,24 +519,9 @@ module Make (O : Var_order) = struct
         |> List.rev
       in
       let _ : bool = add_clause env clause in ()
-    ) clauses;
-    env
+    ) clauses
 
-  let of_dimacs_file ?timeout filename =
-    let open Dimacs in
-    let oi = open_in filename in
-    let lexbuf = Lexing.from_channel ~with_positions:true oi in
-    Fun.protect ~finally:(fun () -> close_in_noerr oi) @@ fun () ->
-      try
-        let cnf = Parser.cnf Lexer.read lexbuf in
-        add_cnf ?timeout cnf
-      with Parser.Error as exn ->
-        let bt = Printexc.get_raw_backtrace() in
-        Logs.debug (fun k -> k"syntax error at position %a"
-          pp_position lexbuf.lex_curr_p);
-        Printexc.raise_with_backtrace exn bt
-
-  let new_var = new_var ~dimacs_id:None
+  let new_var env = new_var ~dimacs_id:None env
 
   let propagate env =
     let tmp = ref (Vec.make ~dummy:Clause.dummy 17) in
@@ -728,7 +684,8 @@ module Make (O : Var_order) = struct
   let check env assumptions =
     let () =
       match assumptions with
-      | [] -> Logs.debug (fun k -> k"solve")
+      | [] -> 
+        Logs.debug (fun k -> k"solve")
       | _ ->
         Logs.debug (fun k -> k"solve with assumptions %a"
           Fmt.(list ~sep:sp Lit.pp) assumptions)
@@ -758,7 +715,7 @@ module Make (O : Var_order) = struct
       done;
       assert false
     with
-    | Exit | Unsat -> (Unsat : answer)
+    | Exit | Unsat -> (Unsat : _ answer)
     | Sat mdl ->
       cancel_until env 0;
       Sat mdl
