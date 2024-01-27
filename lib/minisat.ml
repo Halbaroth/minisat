@@ -1,5 +1,3 @@
-include Lbool
-
 type 'w var = Solver.var
 type 'w lit = Solver.lit
 
@@ -25,7 +23,7 @@ module Solver = struct
     val add_clause : wit lit list -> bool
     val add_cnf : Dimacs.Ast.t -> unit
     val simplify_db : unit -> bool
-    val check : wit lit list -> wit lit answer
+    val check : wit lit list -> wit lit Core.answer
   end
 
   type order = (module Var_order)

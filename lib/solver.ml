@@ -1,5 +1,4 @@
 open Ppx_compare_lib.Builtin
-include Lbool 
 
 type lit = {
   var : var;
@@ -17,7 +16,7 @@ and var = {
   undos : clause Vec.t;
   mutable dlvl : int;
   mutable reason : clause;
-  mutable value : lbool;
+  mutable value : Core.lbool;
   lit : lit;
   id : int;
   dimacs_id : int option;
@@ -102,7 +101,7 @@ module Lit = struct
   let[@inline always] var lit = lit.var
 
   let[@inline always] value { var; sign; _ } =
-    if sign then neg_lbool var.value else var.value
+    if sign then Core.neg_lbool var.value else var.value
 
   let pp ppf ({ var; sign; _ } as lit) =
     if lit == dummy_lit then
@@ -185,7 +184,7 @@ module type S = sig
   val new_var : t -> lit
   val add_clause : t -> lit list -> bool
   val simplify_db : t -> bool
-  val check : t -> lit list -> lit answer
+  val check : t -> lit list -> lit Core.answer
 end
 
 module Make (O : Var_order) = struct
@@ -283,7 +282,7 @@ module Make (O : Var_order) = struct
     Array.iter (fun lit ->
       if Lit.compare !prev lit <> 0 then begin 
         prev := lit;
-        if compare_lbool (Lit.value lit) False <> 0 then 
+        if Core.compare_lbool (Lit.value lit) False <> 0 then 
           Vec.push res lit
       end
     ) lits;
@@ -323,7 +322,7 @@ module Make (O : Var_order) = struct
       lits.(1) <- p.neg
     end;
     (* If the first literal is true, the clause is already satisfied. *)
-    if equal_lbool (Lit.value lits.(0)) True then begin
+    if Core.equal_lbool (Lit.value lits.(0)) True then begin
       Vec.push p.watched clause;
       assert (Vec.size p.watched > 0);
       true
@@ -332,7 +331,7 @@ module Make (O : Var_order) = struct
       (* Look for a new literal to watch. *)
       try
         for i = 2 to Array.length lits - 1 do
-          if not @@ equal_lbool (Lit.value lits.(i)) False then begin
+          if not @@ Core.equal_lbool (Lit.value lits.(i)) False then begin
             lits.(1) <- lits.(i);
             lits.(i) <- p.neg;
             Vec.push lits.(1).neg.watched clause;
@@ -379,7 +378,7 @@ module Make (O : Var_order) = struct
         true, Some clause
     in
     if not learnt then
-      if Vec.exists (fun lit -> equal_lbool (Lit.value lit) True) ps then
+      if Vec.exists (fun lit -> Core.equal_lbool (Lit.value lit) True) ps then
         true, None
       else if Vec.exists (fun lit -> Vec.mem lit.neg ps) ps then
         true, None
@@ -715,7 +714,7 @@ module Make (O : Var_order) = struct
       done;
       assert false
     with
-    | Exit | Unsat -> (Unsat : _ answer)
+    | Exit | Unsat -> (Unsat : _ Core.answer)
     | Sat mdl ->
       cancel_until env 0;
       Sat mdl
