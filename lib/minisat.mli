@@ -8,6 +8,8 @@ module Var : sig
   val dummy : 'w var
   (** Dummy value used by vectors. *)
 
+  val activity : 'w var -> float
+
   val compare : 'w var -> 'w var -> int
   (** [compare v1 v2] compares the two variables [v1] and [v2]. *)
 
@@ -44,18 +46,25 @@ module type Var_order = sig
   type 'w t 
 
   val make : unit -> 'w t
+  (** [make ()] creates a new environment for the order heuristic.  
+      This function is called during the creation of the solver ['w]. *)
+
   val new_var : 'w t -> 'w var -> unit
+  (** Hook calling when the solver ['w] creates a new variable. *)
+
   val update_var : 'w t -> 'w var -> unit
   val update_all : 'w t -> unit
   val undo : 'w t -> 'w var -> unit
-  val select : 'w t -> 'w var 
+
+  val select : 'w t -> 'w var
+  (** [select env] selects the next variable to decide. *)
 end
 
 (** Type safe API of the SAT solver. *)
 module Solver : sig
   module type S = sig
     type wit
-    (** Witness of the SAT solver. *)
+    (** Identifier of the SAT solver. *)
 
     val new_var : unit -> wit lit
     (** [make_var ()] creates a new propositional variable of the solver [wit]. 
@@ -79,18 +88,14 @@ module Solver : sig
   type t = (module S)
   (** Type of the solver. *)
 
-  val make : ?timeout:int -> order:order -> unit -> t
-  (** [make ?timeout ()] creates a new solver with the time limit given by 
-      [timeout]. Omitting the argument [timeout] means the solver has no 
-      limit time. 
+  val make : order:order -> unit -> t
+  (** [make ~order ()] creates a new solver using the order heuristic 
+      [order]. *)
 
-      @raise invalid_arg if the timeout is negative. *)
-
-  val of_dimacs_file : ?timeout:int -> order:order -> string -> t
-  (** [of_dimacs_file file] creates a new solver with the time limit given by 
-      [timeout] and loads the content of the dimacs file [file].
-     
-      @raise invalid_arg if the timeout is negative. *)
+  val of_dimacs_file : order:order -> string -> t
+  (** [of_dimacs_file file] creates a new solver and loads the content of 
+      the dimacs file [file]. *)
 end
 
+module Core : module type of Core 
 module Vec : module type of Vec 

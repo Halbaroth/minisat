@@ -1,4 +1,4 @@
 (executable
  (public_name minisat)
  (name main)
- (libraries minisat logs fmt))
+ (libraries minisat logs logs.fmt fmt bheap))

@@ -9,11 +9,30 @@ let[@inline always] neg_lbool b =
 type 'a answer =
   | Sat of 'a array 
   | Unsat
-  | Timeout
-  (** The time limit is reached. *)
 
 let pp_answer ppf ans =
   match ans with 
-  | Sat _ -> Fmt.pf ppf "sat"
-  | Unsat -> Fmt.pf ppf "unsat"
-  | Timeout -> Fmt.pf ppf "timeout"
+  | Sat _ -> 
+    Fmt.(const string "sat" |> styled (`Fg `Green)) ppf ()
+  | Unsat -> 
+    Fmt.(const string "unsat" |> styled (`Fg `Blue)) ppf () 
+
+exception Timeout 
+
+let with_timeout =
+  let sigalrm_handle signal = 
+    if signal = Sys.sigalrm then
+      raise Timeout 
+  and finally () = ignore(Unix.alarm 0) 
+  in fun ~timelimit f ->
+    if timelimit <= 0 then f ()
+    else 
+      Fun.protect ~finally @@ fun () ->
+        Sys.(set_signal sigalrm (Signal_handle sigalrm_handle));
+        ignore(Unix.alarm timelimit);
+        f ()
+
+let with_timer f =
+  let start = Sys.time () in
+  let res = f () in
+  Sys.time () -. start, res

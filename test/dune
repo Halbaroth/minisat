@@ -1,7 +1,14 @@
 (executable
   (public_name benchmarks)
   (name benchmarks)
-  (libraries minisat dune-site logs))
+  (libraries 
+    minisat 
+    dune-site 
+    fmt 
+    logs 
+    logs.fmt 
+    printbox 
+    printbox-text))
 
 (rule
   (alias benchmarks)

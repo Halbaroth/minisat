@@ -29,7 +29,7 @@ module Solver = struct
   type order = (module Var_order)
   type t = (module S)
 
-  let make ?timeout ~order:(module O : Var_order) () =
+  let make ~order:(module O : Var_order) () =
     let module WIT = (struct type t end) in
     let module SAT = Solver.Make 
       (struct 
@@ -37,7 +37,7 @@ module Solver = struct
         type nonrec t = WIT.t t 
       end)
     in 
-    let env = SAT.make ?timeout () in
+    let env = SAT.make () in
     (module struct 
       type wit = WIT.t 
 
@@ -49,13 +49,13 @@ module Solver = struct
     end : S)
 
   (* TODO: move this function in the Dimacs project *)
-  let pp_position fmt (pos : Lexing.position) =
-    Fmt.pf fmt "%s:%d:%d" pos.pos_fname pos.pos_lnum
+  let pp_position ppf (pos : Lexing.position) =
+    Fmt.pf ppf "%s:%d:%d" pos.pos_fname pos.pos_lnum
       (pos.pos_cnum - pos.pos_bol + 1)
 
-  let of_dimacs_file ?timeout ~order filename =
+  let of_dimacs_file ~order filename =
     let open Dimacs in
-    let (module SAT) = make ?timeout ~order () in 
+    let (module SAT) = make ~order () in 
     let oi = open_in filename in
     let lexbuf = Lexing.from_channel ~with_positions:true oi in
     Fun.protect ~finally:(fun () -> close_in_noerr oi) @@ fun () ->
@@ -70,4 +70,5 @@ module Solver = struct
         Printexc.raise_with_backtrace exn bt
 end 
 
+module Core = Core
 module Vec = Vec

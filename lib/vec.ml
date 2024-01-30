@@ -1,5 +1,8 @@
 type 'a t = { mutable data: 'a array; mutable size: int; dummy: 'a }
 
+let[@inline always] uget a = Array.unsafe_get a 
+let[@inline always] uset a = Array.unsafe_set a
+
 let[@inline always] size { size; _ } = size
 let[@inline always] capacity { data; _ } = Array.length data
 
@@ -15,15 +18,15 @@ let of_list ~dummy lst =
   { data = Array.of_list lst; size = List.length lst; dummy }
 
 let shrink ({ data; size; dummy } as vec) i =
-  assert (i >= size);
+  assert (0 <= i && i <= size);
   for j = size-i to size-1 do
-    Array.unsafe_set data j dummy
+    uset data j dummy
   done;
   vec.size <- size-i
 
 let pop ({ data; size; dummy } as vec) =
   assert (size > 0);
-  Array.unsafe_set data (size-1) dummy;
+  uset data (size-1) dummy;
   vec.size <- size-1
 
 let grow_to ({ data; size; dummy } as vec) cap =
@@ -32,7 +35,7 @@ let grow_to ({ data; size; dummy } as vec) cap =
     let data =
       Array.init cap (fun i ->
         if i < size then
-          Array.unsafe_get data i
+          uget data i
         else
           dummy)
     in
@@ -43,7 +46,7 @@ let push ({ size; _ } as vec) v =
     let cap = max 1 (capacity vec) in
     grow_to vec (2 * cap)
   end;
-  Array.unsafe_set vec.data size v;
+  uset vec.data size v;
   vec.size <- size + 1
 
 let clear ({ dummy; _ } as vec) =
@@ -53,21 +56,21 @@ let clear ({ dummy; _ } as vec) =
 
 let last { data; size; _ } =
   assert (size > 0);
-  Array.unsafe_get data (size-1)
+  uget data (size-1)
 
 let get { data; size; _ } i =
   assert (0 <= i && i < size);
-  Array.unsafe_get data i
+  uget data i
 
 let set { data; size; _ } i v =
   assert (0 <= i && i < size);
-  Array.unsafe_set data i v
+  uset data i v
 
 let find_first p vec =
   let elt = ref vec.dummy in
   try
     for i = 0 to size vec - 1 do
-      elt := Array.unsafe_get vec.data i;
+      elt := uget vec.data i;
       if p !elt then
         raise_notrace Exit
     done;
@@ -77,9 +80,9 @@ let find_first p vec =
 let remove ({ data; size; dummy } as vec) elt =
   try
     for i = 0 to size - 1 do
-      if Array.unsafe_get data i == elt then begin
-        Array.unsafe_set data i (last vec);
-        Array.unsafe_set data (size-1) dummy;
+      if uget data i == elt then begin
+        uset data i (last vec);
+        uset data (size-1) dummy;
         vec.size <- size-1;
         raise_notrace Exit
       end
@@ -97,7 +100,7 @@ let to_list vec = to_array vec |> Array.to_list
 
 let iteri f { data; size; _ } =
   for i = 0 to size-1 do
-    let elt = Array.unsafe_get data i in
+    let elt = uget data i in
     f i elt
   done
 
@@ -133,8 +136,8 @@ let compare cmp
     else
       try
         for i = 0 to size1-1 do
-          let u = Array.unsafe_get data1 i in
-          let v = Array.unsafe_get data2 i in
+          let u = uget data1 i in
+          let v = uget data2 i in
           let c = cmp u v in
           if c <> 0 then raise_notrace (Cmp c)
         done;

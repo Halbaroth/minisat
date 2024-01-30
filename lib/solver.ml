@@ -74,9 +74,8 @@ and neg_dummy_lit = {
 
 module Var = struct 
   let dummy = dummy_var 
-
   let compare = compare_var 
-
+  let[@inline always] activity { var_activity; _ } = var_activity
   let[@inline always] value v = v.value
 
   let pp ppf ({ id; dimacs_id; _ } as var) =
@@ -93,11 +92,8 @@ end
 
 module Lit = struct 
   let dummy = dummy_lit 
-
   let compare = compare_lit
-  
   let[@inline always] (-~) lit = lit.neg
- 
   let[@inline always] var lit = lit.var
 
   let[@inline always] value { var; sign; _ } =
@@ -136,10 +132,20 @@ module Clause = struct
     Vec.remove lits.(0).neg.watched clause;
     Vec.remove lits.(1).neg.watched clause
 
+  let pp ppf ({ lits; _ } as clause) =
+    if clause == dummy then
+      Fmt.pf ppf "(dummy_clause)"
+    else
+      Fmt.(array ~sep:(const string "∨") Lit.pp |> box) ppf lits
+
   (* Simplify a clause by removing all its false literals. This
      function can be called only at top-level with an empty propagation
-     queue. *)
+     queue.
+
+     @return [true] if and only if the clause is already true (and can 
+             be completely removed as we are at the top-level). *)
   let simplify clause =
+    Logs.debug (fun k -> k"simplify the clause %a" pp clause);
     let lits = clause.lits in
     let j = ref 0 in
     try
@@ -147,22 +153,16 @@ module Clause = struct
         match Lit.value lits.(i) with
         | True -> raise Exit
         | Unknown ->
-            lits.(!j) <- lits.(i);
-            incr j
+          lits.(!j) <- lits.(i);
+          incr j
         | False -> ()
       done;
-      let l = Array.length lits - !j in
-      clause.lits <- Array.init l (fun i -> lits.(i));
+      clause.lits <- Array.init !j (fun i -> lits.(i));
+      Logs.debug (fun k -> k"now the clause is %a" pp clause);
       false
     with Exit -> true
 
   let undo _ _ = ()
-
-  let pp ppf ({ lits; _ } as clause) =
-    if clause == dummy then
-      Fmt.pf ppf "(dummy_clause)"
-    else
-      Fmt.(array ~sep:sp Lit.pp ppf lits)
 end 
 
 module type Var_order = sig
@@ -180,7 +180,7 @@ module type S = sig
   type t 
   type order
 
-  val make : ?timeout:int -> unit -> t
+  val make : unit -> t
   val new_var : t -> lit
   val add_clause : t -> lit list -> bool
   val simplify_db : t -> bool
@@ -211,9 +211,6 @@ module Make (O : Var_order) = struct
     vars: var Vec.t;
     trail: lit Vec.t;
     trail_lim: int Vec.t;
-
-    (* Zero means no time limit. *)
-    timeout : int;
   }
 
   exception Unsat
@@ -306,9 +303,6 @@ module Make (O : Var_order) = struct
         p.var.reason <- from;
         Vec.push env.trail p;
         Queue.push p env.propagations;
-        Logs.debug (fun k -> k"assignment after enqueue %a"
-          Fmt.(iter ~sep:sp Vec.iter Lit.pp)
-          env.trail);
         true
 
   let propagate_in_clause env clause p =
@@ -400,7 +394,7 @@ module Make (O : Var_order) = struct
 
   let record env lits =
     Logs.debug (fun k -> k"record the clause %a" 
-        Fmt.(iter ~sep:sp Vec.iter Lit.pp) lits);
+        Fmt.(iter ~sep:(const string "∨") Vec.iter Lit.pp) lits);
     assert (Vec.size lits > 0);
     let res, clause = new_clause env lits ~learnt:true in
     assert res;
@@ -476,9 +470,7 @@ module Make (O : Var_order) = struct
     Logs.debug (fun k -> k "new var %a" Var.pp var);
     lit
 
-  let make ?(timeout = 0) () = 
-  if timeout < 0 then invalid_arg "make";
-  {
+  let make () = {
     root_lvl = 0;
     constrs = Vec.make ~dummy:dummy_clause 5;
     learnts = Vec.make ~dummy:dummy_clause 5;
@@ -491,24 +483,20 @@ module Make (O : Var_order) = struct
     vars = Vec.make ~dummy:dummy_var 5;
     trail = Vec.make ~dummy:dummy_lit 5;
     trail_lim = Vec.make ~dummy:(-1) 5;
-    timeout = timeout;
   }
-
-  module IntMap = Map.Make (Int)
 
   let add_cnf env Dimacs.Loc.{ data = (_ , clauses); _ } =
     let open Dimacs in
-    (* TODO: use a Hashtbl here. *)
-    let cache : lit IntMap.t ref = ref IntMap.empty in
+    let cache : (int, lit) Hashtbl.t = Hashtbl.create 17 in
     List.iter (fun Loc.{ data = clause; _ } ->
       let clause =
         List.fold_left (fun acc Loc.{ data = l; _ } ->
           let lit =
-            match IntMap.find (Int.abs l) !cache with
+            match Hashtbl.find cache (Int.abs l) with
             | lit -> lit 
             | exception Not_found ->
               let lit = new_var ~dimacs_id:(Some (Int.abs l)) env in
-              cache := IntMap.add (Int.abs l) lit !cache;
+              Hashtbl.add cache (Int.abs l) lit;
               lit
           in
           assert (l <> 0);
@@ -523,30 +511,23 @@ module Make (O : Var_order) = struct
   let new_var env = new_var ~dimacs_id:None env
 
   let propagate env =
-    let tmp = ref (Vec.make ~dummy:Clause.dummy 17) in
     while Queue.length env.propagations > 0 do
       let p = Queue.pop env.propagations in
       Logs.debug (fun k -> k"propagate literal %a" Lit.pp p);
-      Logs.debug (fun k -> k"literal %a watches clauses: %a" 
-                     Lit.pp p
-                     Fmt.(iter ~sep:comma Vec.iter Clause.pp) p.watched);
       (* TODO: replace the copy by a move as we don't use the 
          old watches vector anymore. *)
-      tmp := Vec.copy p.watched;
+      let tmp = Vec.copy p.watched in
       (* FIXME: is it necessary? *)
       Vec.clear p.watched;
-      for i = 0 to Vec.size !tmp - 1 do
-        let clause = Vec.get !tmp i in
+      for i = 0 to Vec.size tmp - 1 do
+        let clause = Vec.get tmp i in
         if not @@ propagate_in_clause env clause p then
           begin
             (* We found a conflict. *)
-            for j = i + 1 to Vec.size !tmp - 1 do
-              Vec.push p.watched (Vec.get !tmp j)
+            for j = i + 1 to Vec.size tmp - 1 do
+              Vec.push p.watched (Vec.get tmp j)
             done;
             Queue.clear env.propagations;
-            let clause = Vec.get !tmp i in
-            assert (Array.for_all 
-                      (fun lit -> Lit.value lit = False) clause.lits);
             raise_notrace (Conflict clause)
           end
       done
@@ -597,45 +578,60 @@ module Make (O : Var_order) = struct
     done;
     Vec.set out_learnt 0 !p.neg;
     Logs.debug (fun k -> k"learn %a"
-      Fmt.(iter ~sep:sp Vec.iter Lit.pp) out_learnt);
+      Fmt.(iter ~sep:(const string "∨") Vec.iter Lit.pp |> box) out_learnt);
     out_learnt, !bt_lvl
 
   let reduce_db env =
     let nb = nb_learnts env in
-    let m = nb / 2 in
-    let limit = env.cla_inc /. (Float.of_int nb) in
+    let lim = env.cla_inc /. (Float.of_int nb) in
+    let i = ref 0 in
     let j = ref 0 in
-    for i = 0 to nb - 1 do
-      let learnt = Vec.get env.learnts i in
-      if not @@ Clause.locked learnt
-        && (i < m || (i >= m && learnt.cla_activity < limit)) then
-        Clause.remove learnt
-      else begin
-        Vec.set env.learnts !j learnt;
+    while !i < (nb / 2) do 
+      let learnt = Vec.get env.learnts !i in
+      if not @@ Clause.locked learnt then 
+        Clause.remove learnt 
+      else begin 
+        Vec.set env.learnts !j learnt; 
         incr j
-      end
+      end; 
+      incr i
     done;
-    Vec.shrink env.learnts !j
+    while !i < nb do 
+      let learnt = Vec.get env.learnts !i in 
+      if not @@ Clause.locked learnt && learnt.cla_activity < lim then 
+        Clause.remove learnt
+      else begin 
+        Vec.set env.learnts !j learnt; 
+        incr j
+      end; 
+      incr i
+    done;
+    Vec.shrink env.learnts (!i - !j)
 
   let simplify_db env =
-    let[@inline always] aux clas =
+    Logs.debug (fun k -> k"simplify the clause database");
+    let[@inline always] aux clauses =
       let j = ref 0 in
-      for i = 0 to Vec.size clas - 1 do
-        let cla = Vec.get clas i in
-        if Clause.simplify cla then
-          Clause.remove cla
+      let sz = Vec.size clauses in
+      for i = 0 to sz - 1 do
+        let c = Vec.get clauses i in
+        if Clause.simplify c then
+          Clause.remove c
         else begin
-          Vec.set clas !j cla;
+          Vec.set clauses !j c;
           incr j
         end
-      done
+      done;
+      Vec.shrink clauses (sz - !j)
     in
     match propagate env with 
-    | () -> false 
-    | exception (Conflict _) ->
+    | exception (Conflict _) -> false
+    | () ->
       aux env.constrs;
       aux env.learnts;
       true
+
+  exception Restart
 
   let search env ~max_conflicts ~max_learnts ~var_decay ~cla_decay =
     assert (decision_level env = env.root_lvl);
@@ -660,9 +656,12 @@ module Make (O : Var_order) = struct
           end
       | () ->
           (* No conflict have been found. *)
-          if decision_level env = 0 then
-            (* FIXME: removing asserts is dangereous here. *)
-            assert (simplify_db env = true);
+          if decision_level env = 0 then begin
+            let res = simplify_db env in
+            (* We cannot reach a contradiction here as we exclude this 
+               case in the above pattern matching. *)
+            assert res; 
+          end;
           if nb_learnts env - nb_assigns env >= max_learnts then
             reduce_db env;
           if nb_assigns env = nb_vars env then
@@ -672,7 +671,7 @@ module Make (O : Var_order) = struct
           else if !conflict >= max_conflicts then begin
             (* Reached bound on number of conflicts. Force a restart. *)
             cancel_until env env.root_lvl;
-            raise_notrace Exit
+            raise_notrace Restart
           end
           else
             let p = (O.select env.order).lit in
@@ -687,7 +686,7 @@ module Make (O : Var_order) = struct
         Logs.debug (fun k -> k"solve")
       | _ ->
         Logs.debug (fun k -> k"solve with assumptions %a"
-          Fmt.(list ~sep:sp Lit.pp) assumptions)
+          Fmt.(list ~sep:sp Lit.pp |> box) assumptions)
     in
     let var_decay = ref 0.95 in
     let cla_decay = ref 0.999 in
@@ -705,12 +704,15 @@ module Make (O : Var_order) = struct
       ) assumptions;
       env.root_lvl <- decision_level env;
       while true do
-        search env ~max_conflicts:!max_conflicts ~max_learnts:!max_learnts
-          ~var_decay:!var_decay ~cla_decay:!cla_decay;
-        max_conflicts := 
-          (Float.of_int !max_conflicts) *. 1.5 |> Int.of_float;
-        max_learnts := 
-          (Float.of_int !max_learnts) *. 1.1 |> Int.of_float;
+        try
+          search env ~max_conflicts:!max_conflicts ~max_learnts:!max_learnts
+            ~var_decay:!var_decay ~cla_decay:!cla_decay;
+        with Restart ->
+          max_conflicts := 
+            (Float.of_int !max_conflicts) *. 1.5 |> Int.of_float;
+          max_learnts := 
+            (Float.of_int !max_learnts) *. 1.1 |> Int.of_float;
+          ()
       done;
       assert false
     with

@@ -18,8 +18,8 @@
 
 (package
  (name minisat)
- (synopsis "A short synopsis")
- (description "A longer description")
+ (synopsis "An OCaml implementation of MiniSAT")
+ (description "An OCaml implementation of MiniSAT")
  (depends
    ocaml
    dune
@@ -27,10 +27,14 @@
    cmdliner
    ppx_sexp_conv
    ppx_deriving
+   fmt 
    logs
    base
+   bheap
    stdio
    dimacs
+   printbox
+   printbox-text
    (ppx_inline_test :with-test)
    (ppx_assert :with-test))
  (tags
